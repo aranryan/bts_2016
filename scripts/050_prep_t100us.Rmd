@@ -1,0 +1,296 @@
+---
+title: "Untitled"
+author: "Tourism Economics"
+date: "April 15, 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+
+library(arlodr)
+library(zoo, warn.conflicts=FALSE)
+library(xts, warn.conflicts=FALSE)
+library(dplyr, warn.conflicts=FALSE)
+library(tidyr, warn.conflicts=FALSE)
+library(ggplot2, warn.conflicts=FALSE)
+library(knitr)
+library(readr)
+
+
+```
+
+```{r}
+
+# load certain meta data
+ffile <- c("~/Project/R projects/bts_2016/input_data/T100_D_MARKET_US_CARRIER_ONLY_META")
+l_airport_id <- read_csv(paste0(ffile, "/", "L_AIRPORT_ID.csv"), col_names=TRUE)
+colnames(l_airport_id) <- tolower(colnames(l_airport_id))
+
+ffile <- c("~/Project/R projects/bts_2016/input_data/T100_D_MARKET_US_CARRIER_ONLY_META")
+l_city_market_id <- read_csv(paste0(ffile, "/", "L_CITY_MARKET_ID.csv"), col_names=TRUE)
+colnames(l_city_market_id) <- tolower(colnames(l_city_market_id))
+
+# load manual crosswalk
+# the dest_city_market_id column is the part that is stable. The names can change. So use the
+# codes for lookups.
+ffile <- c("~/Project/R projects/bts_2016/input_data/")
+manual_cw_from_bts_cityid <- read_csv(paste0(ffile, "/", "manual_cw_from_bts_cityid.csv"), col_names=TRUE)
+
+# load census metro list from fred
+ffile <- c("~/Project/R projects/bts_2016/input_data/")
+m_cen <- read_csv(paste0(ffile, "/", "m_cen.csv"), col_names=TRUE)
+
+# load data
+load("~/Project/R projects/bts_2016/output_data/t100d_uscar.Rdata")
+
+```
+
+
+```{r echo=FALSE}
+
+data1 <- t100d_uscar
+
+# add certain meta data
+label_airport_id <- l_airport_id %>%
+  rename(dest_airport_name = description)
+
+#############
+
+# add certain meta data
+label_city_market_id <- l_city_market_id %>%
+  rename(dest_city_name = description)
+
+# drop the dest_city_name because it may be old, and
+# instead we can use the one from the label_city_market_id file
+manual_cw_from_bts_cityid <- manual_cw_from_bts_cityid %>%
+  select(-dest_city_name)
+
+data_work <- data1 %>%
+  left_join(label_airport_id, by = c("dest_airport_id" = "code")) %>%
+  # remove the existing dest_city_name because I noticed that Dallas seemed to come up with two different
+  # text names, under one code, so I thought I'd just merge on a recent
+  # list of destination city names
+  select(-dest_city_name) %>%
+  left_join(label_city_market_id, by = c("dest_city_market_id" = "code")) %>%
+  left_join(manual_cw_from_bts_cityid, by = c("dest_city_market_id")) %>%
+  # rename the passenger column
+  rename(pax = passengers)
+
+```
+
+
+Generate a list of cities, which was useful for creating a manual crosswalk.
+```{r}
+
+city_by_volume <- data_work %>%
+  filter(year == 2015) %>%
+  group_by(dest_city_market_id, dest_city_name) %>%
+  summarise(pax = sum(pax)) %>%
+  ungroup() %>%
+  arrange(desc(pax))
+kable(head(city_by_volume,50))
+
+write.csv(city_by_volume, "~/Project/R projects/bts_2016/output_data/city_by_volume.csv", row.names=FALSE)
+```
+
+
+
+# Experimenting a bit with Atlanta
+```{r}
+
+temp1 <- data_work %>%
+  filter(unique_carrier == "DL") %>%
+  group_by(dest_airport_name, year, month) %>%
+  summarise(pax = sum(pax))
+
+atlanta <- temp1 %>%
+  filter(year == 2014) %>%
+  filter(dest_airport_name == "Atlanta, GA: Hartsfield-Jackson Atlanta International")
+
+kable(atlanta)
+```
+
+For December 2014, I keep getting 2,457,492. Same as Excel, and different from the web page which shows
+2,456,412.
+
+```{r}
+
+atlanta <- data_work %>%
+  filter(dest_airport_id == 10397) %>%
+  filter(unique_carrier == "DL") %>%
+  group_by(year, month) %>%
+  summarise(pax = sum(pax))
+
+kable(tail(atlanta, 18))
+
+```
+
+```{r}
+
+atlanta <- data_work %>%
+  filter(dest_city_market_id == 30397) %>%
+  filter(unique_carrier == "DL") %>%
+  group_by(year, month) %>%
+  summarise(pax = sum(pax))
+
+kable(tail(atlanta, 18))
+
+```
+
+
+```{r}
+data_1 <- data_work %>%
+  group_by(dest_city_market_id, dest_city_name, year, month) %>%
+  summarise(pax = sum(pax))
+
+atlanta <- data_1 %>%
+  filter(year == 2015) %>%
+  filter(dest_city_name == "Atlanta, GA (Metropolitan Area)")
+
+kable(atlanta)
+```
+
+Use the manual crosswalk. For those areas that have an area_name_simp, see which airports fall into that area, while also seeing how the dest_city_names relate.
+```{r}
+
+temp3 <- data_work %>%
+  filter(! is.na(area_name_simp)) 
+
+air_by_area_simp  <- distinct(select(temp3, dest_city_name, area_name_simp, dest_airport_name)) %>%
+  arrange(dest_city_name, area_name_simp, dest_airport_name)
+
+kable(air_by_area_simp)
+
+
+##############
+#
+# modify by making a few changes
+
+# pull San Jose airport out of San Francisco to a San Jose, CA area_name_simp
+data_work_mod1 <- data_work %>%
+  mutate(area_name_simp = ifelse(dest_airport_id == 14831, "San Jose, CA", area_name_simp)) 
+
+# Also, created a separate Orange County
+temp_orgca <- data_work_mod1 %>%
+  filter(dest_airport_id == 14908) %>%
+  mutate(area_name_simp = "Orange County, CA")
+
+data_work_mod2 <- rbind(data_work_mod1, temp_orgca)
+  
+
+
+
+
+```
+
+## Take another look after the changes
+As a result of the changes, the San Jose airport and the John Wayne airport in Orange County now
+both have corresponding area_name_simp entries. The summary table still shows that from a bls destin_city_name
+perspective, both are still in the same destin_city_name, but that isn't being used to aggregate the data
+```{r}
+## take another look after the changes
+
+temp3 <- data_work_mod2 %>%
+  filter(! is.na(area_name_simp)) 
+
+air_by_area_simp  <- distinct(select(temp3, dest_city_name, area_name_simp, dest_airport_name)) %>%
+  arrange(dest_city_name, area_name_simp, dest_airport_name)
+
+kable(air_by_area_simp)
+```
+
+
+# Create output table
+```{r}
+
+# calculate a total US
+data_tot <- data_work_mod2 %>%
+  # this would be double counting, so first excluded Orange County
+  # which is still also in LA
+  filter(area_name_simp != "Orange County, CA") %>%
+  group_by(year, month) %>%
+  summarise(pax = sum(pax)) %>%
+  ungroup() %>%
+  mutate(area_sh = "usxxx") %>%
+  mutate(area_name_simp = "United States") %>%
+  mutate(date = paste(year, month, "01", sep="-")) %>%
+  mutate(date = as.Date(date)) %>%
+  select(-year, -month)
+
+data_4 <- data_work_mod2 %>%
+  filter(!is.na(area_name_simp)) %>%
+  group_by(area_name_simp, year, month) %>%
+  summarise(pax = sum(pax)) %>%
+  ungroup() %>%
+  ungroup()
+
+data_5 <- data_4 %>%
+  left_join(m_cen, by = "area_name_simp") %>%
+  # fix Orange County which isn't in m_cen
+  mutate(area_sh = ifelse(area_name_simp == "Orange County, CA", "orgca", area_sh)) %>%
+  select(area_name_simp, area_sh, year, month, pax) %>%
+  mutate(date = paste(year, month, "01", sep="-")) %>%
+  mutate(date = as.Date(date)) %>%
+  select(-year, -month) %>%
+  select(date, everything()) 
+
+# add on total
+hold_t100d_uscar <- rbind(data_5, data_tot) %>%
+  # add columns that describes the data
+  # domestic flights
+  mutate(flight_type = "d") %>%
+  # us carriers
+  mutate(carriers = "uscar") 
+
+  
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "usxxx")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "phlpa")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "wshdc")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "sttwa")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "snfca")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "dlltx")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "hsttx")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "snjca")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+look <- hold_t100d_uscar %>%
+  filter(area_sh == "orgca")
+ggplot(data=look, aes(x=date, y=pax)) + 
+  geom_line()
+
+save(hold_t100d_uscar, file="~/Project/R projects/bts_2016/output_data/hold_t100d_uscar.Rdata")
+
+```
+
